@@ -1,4 +1,4 @@
-// Amrita Campus Bridge — Web Platform Frontend Logic
+// Amrita Campus Bridge — Web Platform Frontend Logic (1-Click GUI App Downloads)
 
 const tabs = document.querySelectorAll('.tab-btn');
 const panels = document.querySelectorAll('.tab-panel');
@@ -50,39 +50,29 @@ document.getElementById('requestForm').addEventListener('submit', async (e) => {
   }
 });
 
-// Modal logic for Hosteller Approve & Host command
-const hostModal = document.getElementById('hostModal');
-const hostModalDesc = document.getElementById('hostModalDesc');
-const hostModalCmd = document.getElementById('hostModalCmd');
-
-window.openApproveModal = function (reqId, scholarName, duration, sessionCode) {
-  const serverOrigin = window.location.origin;
-  hostModalDesc.textContent = `Approving ${scholarName}'s request for ${duration} minutes (Session Code: ${sessionCode}). Run this command on your laptop connected to Amrita College Wi-Fi:`;
-  hostModalCmd.textContent = `node hosteller-agent/agent.js --server ${serverOrigin} --request ${reqId} --session ${sessionCode} --duration ${duration}`;
-  hostModal.classList.remove('hidden');
+// Download pre-configured Hosteller GUI App for a specific Day Scholar request
+window.downloadHostAppForRequest = function (reqId, scholarName, duration, sessionCode) {
+  const hostName = (document.getElementById('instantHostName')?.value || 'Campus-Hosteller').trim();
+  const url =
+    `/api/download/hosteller-app?requestId=${encodeURIComponent(reqId)}` +
+    `&sessionCode=${encodeURIComponent(sessionCode)}` +
+    `&duration=${encodeURIComponent(duration)}` +
+    `&scholar=${encodeURIComponent(scholarName)}` +
+    `&name=${encodeURIComponent(hostName)}`;
+  window.location.href = url;
 };
+
+// Download Instant Hosteller GUI App
+document.getElementById('downloadInstantHostAppBtn').addEventListener('click', () => {
+  const hostName = (document.getElementById('instantHostName').value || 'Campus-Hosteller').trim();
+  const duration = Number(document.getElementById('instantHostDuration').value) || 30;
+  window.location.href = `/api/download/hosteller-app?name=${encodeURIComponent(hostName)}&duration=${encodeURIComponent(duration)}`;
+});
 
 window.revokeSession = async function (code) {
   await fetch(`/api/sessions/${encodeURIComponent(code)}`, { method: 'DELETE' });
   refreshStatus();
 };
-
-document.getElementById('closeModalBtn').addEventListener('click', () => {
-  hostModal.classList.add('hidden');
-});
-
-document.getElementById('copyModalCmdBtn').addEventListener('click', () => {
-  navigator.clipboard.writeText(hostModalCmd.textContent);
-  document.getElementById('copyModalCmdBtn').textContent = 'Copied!';
-  setTimeout(() => (document.getElementById('copyModalCmdBtn').textContent = 'Copy'), 1500);
-});
-
-document.getElementById('copyInstantCmdBtn').addEventListener('click', () => {
-  const cmd = document.getElementById('instantHostCmd').textContent;
-  navigator.clipboard.writeText(cmd);
-  document.getElementById('copyInstantCmdBtn').textContent = 'Copied!';
-  setTimeout(() => (document.getElementById('copyInstantCmdBtn').textContent = 'Copy Command'), 1500);
-});
 
 async function refreshStatus() {
   try {
@@ -97,7 +87,7 @@ async function refreshStatus() {
       txt.textContent = `Campus Relay LIVE (${data.activeSession.sessionCode} • ${formatDuration(data.activeSession.remainingSeconds)} left)`;
     } else {
       dot.className = 'dot offline';
-      txt.textContent = `No Active Hosteller Connected (Proxy Port ${data.proxyPort} Standby)`;
+      txt.textContent = `No Active Hosteller Connected Yet`;
     }
 
     // Update Scholar Active Box
@@ -107,18 +97,18 @@ async function refreshStatus() {
       scholarBox.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem;">
           <div>
-            <span class="badge active">● Campus Relay Ready</span>
-            <h4 style="margin-top:0.35rem;">Hosted by ${s.hostellerName} — Code: <span class="code-chip">${s.sessionCode}</span></h4>
-            <p class="hint" style="margin-top:0.2rem;">Time Remaining: <b>${formatDuration(s.remainingSeconds)}</b> • Proxy: <code>127.0.0.1:${data.proxyPort}</code></p>
+            <span class="badge active">● Campus Relay LIVE</span>
+            <h4 style="margin-top:0.35rem;">Hosted by ${s.hostellerName} — Session Code: <span class="code-chip">${s.sessionCode}</span></h4>
+            <p class="hint" style="margin-top:0.2rem;">Auto-Closes in: <b>${formatDuration(s.remainingSeconds)}</b> • Turn ON your Chrome Extension &amp; Day Scholar App!</p>
           </div>
           <div>
-            <span class="code-chip">Domains: ${s.allowedDomains.join(', ')}</span>
+            <span class="code-chip">Allowed: ${s.allowedDomains.join(', ')}</span>
           </div>
         </div>
       `;
     } else {
       scholarBox.innerHTML = `
-        <p class="muted" style="margin:0;">⏳ Waiting for a Hosteller on College Wi-Fi to approve your request or start <code>Start-Hosteller-Relay.bat</code>.</p>
+        <p class="muted" style="margin:0;">⏳ Waiting for a Hosteller on College Wi-Fi to click <b>"Approve &amp; Download GUI App"</b> and run it.</p>
       `;
     }
 
@@ -142,9 +132,9 @@ async function refreshStatus() {
           <div>
             ${
               r.status === 'pending'
-                ? `<button class="btn btn-sm" onclick="openApproveModal('${r.id}', '${r.scholarName.replace(/'/g, '')}', ${r.durationMinutes}, '${r.sessionCode}')">Host Commands</button>`
+                ? `<button class="btn btn-sm btn-primary" onclick="downloadHostAppForRequest('${r.id}', '${r.scholarName.replace(/'/g, '')}', ${r.durationMinutes}, '${r.sessionCode}')">⬇️ Host GUI App (${r.durationMinutes}m)</button>`
                 : r.status === 'active'
-                ? `<span class="badge active">Connected</span>`
+                ? `<span class="badge active">🟢 Live Now</span>`
                 : ''
             }
           </div>
@@ -158,7 +148,7 @@ async function refreshStatus() {
     const pendingList = document.getElementById('hostellerPendingList');
     const pendingReqs = (data.requests || []).filter((r) => r.status === 'pending');
     if (pendingReqs.length === 0) {
-      pendingList.innerHTML = `<p class="hint">No pending Day Scholar requests right now. You can still start an Instant Open Relay below!</p>`;
+      pendingList.innerHTML = `<p class="hint">No pending Day Scholar requests right now. You can download an Instant Hosteller GUI App below!</p>`;
     } else {
       pendingList.innerHTML = pendingReqs
         .map(
@@ -166,10 +156,10 @@ async function refreshStatus() {
         <div class="req-item">
           <div class="req-meta">
             <h4>${r.scholarName} <span class="code-chip">${r.sessionCode}</span></h4>
-            <p>${r.purpose} • Requested <b>${r.durationMinutes} mins</b></p>
+            <p>${r.purpose} • Auto-close timer: <b>${r.durationMinutes} mins</b></p>
           </div>
           <div style="display:flex;gap:0.4rem;">
-            <button class="btn btn-sm btn-primary" onclick="openApproveModal('${r.id}', '${r.scholarName.replace(/'/g, '')}', ${r.durationMinutes}, '${r.sessionCode}')">✅ Approve &amp; Host</button>
+            <button class="btn btn-sm btn-primary" onclick="downloadHostAppForRequest('${r.id}', '${r.scholarName.replace(/'/g, '')}', ${r.durationMinutes}, '${r.sessionCode}')">⬇️ Approve &amp; Download GUI App</button>
             <button class="btn btn-sm btn-danger" onclick="revokeSession('${r.id}')">Dismiss</button>
           </div>
         </div>
@@ -184,7 +174,7 @@ async function refreshStatus() {
 
     if (!data.activeSessions || data.activeSessions.length === 0) {
       activeContainer.innerHTML = `<div class="status-box"><p class="muted" style="margin:0;">No Hosteller laptop is currently sharing Campus Wi-Fi.</p></div>`;
-      logConsole.innerHTML = `<div class="log-empty">Waiting for a Hosteller agent to connect...</div>`;
+      logConsole.innerHTML = `<div class="log-empty">Waiting for a Hosteller Desktop App to connect...</div>`;
     } else {
       activeContainer.innerHTML = data.activeSessions
         .map(

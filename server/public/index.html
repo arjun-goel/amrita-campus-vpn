@@ -32,17 +32,17 @@
         </div>
       </div>
       <div class="sec-item">
+        <span class="sec-icon">🖥️</span>
+        <div>
+          <strong>1-Click Desktop GUI App (No Terminal!)</strong>
+          <p>Download the pre-configured Windows GUI runner right from this page. It opens a visual timer window and <b>closes automatically</b> when time is up.</p>
+        </div>
+      </div>
+      <div class="sec-item">
         <span class="sec-icon">🎯</span>
         <div>
           <strong>Split-Tunnel Whitelist Only</strong>
           <p>Only <code>*.amrita.edu</code> traffic goes through the campus relay. YouTube, Google, and personal browsing stay on your own internet.</p>
-        </div>
-      </div>
-      <div class="sec-item">
-        <span class="sec-icon">⏱️</span>
-        <div>
-          <strong>Time-Boxed &amp; Revocable</strong>
-          <p>Hostellers approve access for a strict duration (15 / 30 / 60 mins) and can terminate the relay session at any instant.</p>
         </div>
       </div>
     </section>
@@ -50,8 +50,8 @@
     <!-- Role Switcher Tabs -->
     <div class="tabs">
       <button class="tab-btn active" data-tab="scholar">🎒 Day Scholar Portal (Request Campus Wi-Fi)</button>
-      <button class="tab-btn" data-tab="hosteller">🏠 Hosteller Portal (Share Campus Wi-Fi)</button>
-      <button class="tab-btn" data-tab="guide">🔀 Network Switching &amp; Setup Guide</button>
+      <button class="tab-btn" data-tab="hosteller">🏠 Hosteller Portal (Approve &amp; Download Runner App)</button>
+      <button class="tab-btn" data-tab="guide">🔀 Step-by-Step User Guide</button>
     </div>
 
     <!-- TAB 1: DAY SCHOLAR PORTAL -->
@@ -59,7 +59,7 @@
       <div class="grid-2">
         <div class="card">
           <h2>1. Request a Hosteller Relay Slot</h2>
-          <p class="muted">Need to open AUMS or an internal college website from home? Post a time-limited request below (or directly from the Chrome Extension).</p>
+          <p class="muted">Need to open AUMS or an internal college website from home? Post a time-limited request below. A hosteller can approve it with 1 click!</p>
           <form id="requestForm" class="form-stack">
             <div class="field">
               <label for="scholarName">Your Name / Identifier</label>
@@ -93,10 +93,20 @@
         </div>
 
         <div class="card">
-          <h2>2. Your Session &amp; Browser Extension Status</h2>
+          <h2>2. Connect Your Laptop (No Terminal Required)</h2>
           <div id="scholarActiveBox" class="status-box">
-            <p class="muted">No active session selected yet. Submit a request or pick an active Hosteller session code below.</p>
+            <p class="muted">Checking active Hosteller relay session...</p>
           </div>
+
+          <div style="margin-top:0.9rem;display:flex;gap:0.6rem;flex-wrap:wrap;">
+            <a href="/api/download/scholar-app" class="btn btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:0.4rem;">
+              ⬇️ Download Day Scholar Desktop App (.bat GUI)
+            </a>
+          </div>
+          <p class="hint" style="margin-top:0.4rem;">
+            Double-click the downloaded file to open the <b>Day Scholar GUI Window</b> (connects your Chrome Extension to Render Cloud without any terminal!).
+          </p>
+
           <div class="divider"></div>
           <h3>Active &amp; Recent Requests</h3>
           <div id="scholarRequestsList" class="request-list"></div>
@@ -108,87 +118,77 @@
     <section class="tab-panel" id="tab-hosteller">
       <div class="grid-2">
         <div class="card">
-          <h2>Pending Requests from Day Scholars</h2>
-          <p class="muted">Connect your laptop to <b>Amrita College Wi-Fi</b>, then click <b>"Approve &amp; Host"</b> on any request below to generate the 1-line command.</p>
+          <h2>1. Pending Requests from Day Scholars</h2>
+          <p class="muted">Connect your laptop to <b>Amrita College Wi-Fi</b>, then click <b>"⬇️ Approve &amp; Download GUI App"</b> on any request below and run the downloaded file!</p>
           <div id="hostellerPendingList" class="request-list"></div>
 
           <div class="divider"></div>
-          <h3>Or Start an Instant Open Relay Session</h3>
-          <p class="muted">Want to generate a Session Code for a friend right away without waiting for a request?</p>
-          <div class="command-box">
-            <code id="instantHostCmd">node hosteller-agent/agent.js --name "Hosteller" --duration 30</code>
-            <button class="btn btn-sm" id="copyInstantCmdBtn">Copy Command</button>
+          <h3>Or Download an Instant Hosteller GUI App</h3>
+          <p class="muted">Want to start sharing your Campus Wi-Fi right now without waiting for a request? Choose a duration and download the 1-click GUI App:</p>
+          <div class="field-row" style="margin-bottom:0.8rem;">
+            <div class="field">
+              <label for="instantHostName">Your Name / Hostel</label>
+              <input type="text" id="instantHostName" value="Campus-Hosteller" />
+            </div>
+            <div class="field">
+              <label for="instantHostDuration">Auto-Close Timer</label>
+              <select id="instantHostDuration">
+                <option value="15">15 Minutes</option>
+                <option value="30" selected>30 Minutes</option>
+                <option value="60">60 Minutes</option>
+              </select>
+            </div>
           </div>
-          <p class="hint">Or simply double-click <code>Start-Hosteller-Relay.bat</code> in the project folder!</p>
+          <button class="btn btn-primary" id="downloadInstantHostAppBtn">
+            ⬇️ Download 1-Click Hosteller Desktop GUI App
+          </button>
+          <p class="hint" style="margin-top:0.45rem;">
+            Opens a native Windows Desktop Window with a live countdown timer, auto-closes when time finishes, and has a red <b>Stop Sharing</b> button!
+          </p>
         </div>
 
         <div class="card">
-          <h2>Live Campus Relay Monitor (Hosteller View)</h2>
-          <p class="muted">You can see which college domains are being accessed and revoke access anytime. Passwords and page contents are E2E TLS encrypted.</p>
+          <h2>2. Live Campus Relay Monitor (Hosteller View)</h2>
+          <p class="muted">You can see which college domains are being accessed and stop sharing anytime from your Desktop GUI App or right here on the website.</p>
           <div id="activeHostSessions"></div>
           <div class="divider"></div>
           <h3>🔒 Live Encrypted Tunnel Log</h3>
           <div id="tunnelAuditLog" class="log-console">
-            <div class="log-empty">Waiting for a Hosteller agent to connect...</div>
+            <div class="log-empty">Waiting for a Hosteller Desktop App to connect...</div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- TAB 3: NETWORK SWITCHING & SETUP GUIDE -->
+    <!-- TAB 3: GUIDE -->
     <section class="tab-panel" id="tab-guide">
       <div class="card">
-        <h2>🔀 How to Switch Between Home Network &amp; College Wi-Fi (Testing &amp; Daily Use)</h2>
+        <h2>🖥️ How Students Use the 1-Click Desktop GUI Apps (Zero Terminal!)</h2>
         <div class="steps-grid">
           <div class="step-card">
-            <span class="step-num">Step 1</span>
-            <h3>Load the Browser Extension</h3>
+            <span class="step-num">Day Scholar (At Home)</span>
+            <h3>1. Request &amp; Turn ON Extension</h3>
             <ol>
-              <li>Open Chrome, Edge, or Brave and go to <code>chrome://extensions</code>.</li>
-              <li>Turn ON <b>Developer mode</b> (top-right toggle).</li>
-              <li>Click <b>Load unpacked</b> and select the <code>extension</code> folder inside <code>Amrita_VPN</code>.</li>
+              <li>Open the <b>Day Scholar Portal</b> tab and submit a request for <b>15, 30, or 60 minutes</b>.</li>
+              <li>Click <b>⬇️ Download Day Scholar Desktop App</b> and double-click the downloaded file — a Desktop GUI window opens!</li>
+              <li>Click the <b>Amrita Campus VPN</b> Chrome Extension icon and press the <b>⏻ Power Button</b>.</li>
+              <li>Open <code>aums.amrita.edu</code> or any college portal and log in privately!</li>
             </ol>
           </div>
           <div class="step-card">
-            <span class="step-num">Step 2</span>
-            <h3>When on College Wi-Fi (Hosteller Mode)</h3>
+            <span class="step-num">Hosteller (In Hostel)</span>
+            <h3>2. Approve &amp; Run 1-Click App</h3>
             <ol>
-              <li>Connect your laptop Wi-Fi to the <b>Amrita Campus Wi-Fi / LAN</b>.</li>
-              <li>Make sure the extension toggle is <b>OFF</b> on the Hosteller laptop (since the Hosteller is already directly on campus Wi-Fi).</li>
-              <li>Double-click <code>Start-Hosteller-Relay.bat</code> or run:<br/><code>npm run hosteller</code></li>
-              <li>Share the generated <b>Session Code (e.g., AMR-4F9A)</b> with the Day Scholar (or click Approve on their request).</li>
-            </ol>
-          </div>
-          <div class="step-card">
-            <span class="step-num">Step 3</span>
-            <h3>When Outside College (Day Scholar Mode)</h3>
-            <ol>
-              <li>Stay connected to your <b>Home Wi-Fi or Mobile Hotspot</b>.</li>
-              <li>Click the <b>Amrita Campus VPN</b> extension icon in your browser toolbar.</li>
-              <li>Request access (or enter the Session Code) and click <b>Connect Campus VPN</b>.</li>
-              <li>Open any <code>*.amrita.edu</code> website — it routes through the Hosteller's campus Wi-Fi while all other websites use your fast home internet!</li>
+              <li>Stay connected to <b>Amrita College Wi-Fi</b>.</li>
+              <li>Open the <b>Hosteller Portal</b> tab and click <b>⬇️ Approve &amp; Download GUI App</b> next to the Day Scholar's request.</li>
+              <li>Double-click the downloaded file (if Windows SmartScreen asks, click <i>More info → Run anyway</i>).</li>
+              <li>A Desktop GUI App window opens with a live countdown timer! It <b>closes automatically</b> when the timer hits <code>00:00</code>, or you can click <b>🛑 STOP SHARING</b> anytime.</li>
             </ol>
           </div>
         </div>
       </div>
     </section>
   </main>
-
-  <!-- Modal for Hosteller Command when clicking "Approve & Host" -->
-  <div class="modal-backdrop hidden" id="hostModal">
-    <div class="modal">
-      <h3>🏠 Approve &amp; Start Campus Relay on Your Laptop</h3>
-      <p id="hostModalDesc"></p>
-      <div class="command-box">
-        <code id="hostModalCmd"></code>
-        <button class="btn btn-sm" id="copyModalCmdBtn">Copy</button>
-      </div>
-      <p class="hint">Run this command in PowerShell / Terminal inside <code>c:\Users\goela\Desktop\Amrita_VPN</code> while connected to <b>College Wi-Fi</b>. The tunnel will auto-close when the timer expires!</p>
-      <div class="modal-actions">
-        <button class="btn" id="closeModalBtn">Close</button>
-      </div>
-    </div>
-  </div>
 
   <script src="/app.js"></script>
 </body>

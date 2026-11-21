@@ -15,6 +15,7 @@ const http = require('http');
 const net = require('net');
 const { startServers } = require('./server/server');
 const { startHostellerAgent } = require('./hosteller-agent/agent');
+const { buildHostellerGuiBat, buildDayScholarGuiBat } = require('./server/gui-builder');
 
 // ----------------------------------------------------------------------------
 // 1. Generate valid PNG Icons for the Chrome Extension (16x16, 48x48, 128x128)
@@ -89,6 +90,22 @@ function ensureIcons() {
     fs.writeFileSync(path.join(iconsDir, `icon${sz}.png`), createIconPng(sz));
   }
   console.log('✅ Generated Chrome Extension icons (16px, 48px, 128px)');
+
+  // Also pre-generate the local 1-click GUI apps in workspace root
+  fs.writeFileSync(
+    path.join(__dirname, 'Start-Hosteller-Relay.bat'),
+    buildHostellerGuiBat({
+      serverUrl: 'https://amrita-campus-vpn.onrender.com',
+      durationMinutes: 30
+    })
+  );
+  fs.writeFileSync(
+    path.join(__dirname, 'Start-DayScholar-Bridge.bat'),
+    buildDayScholarGuiBat({
+      serverUrl: 'https://amrita-campus-vpn.onrender.com'
+    })
+  );
+  console.log('✅ Generated Zero-Terminal Windows GUI Apps (Start-Hosteller-Relay.bat & Start-DayScholar-Bridge.bat)');
 }
 
 // ----------------------------------------------------------------------------

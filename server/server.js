@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
+const { buildHostellerGuiBat, buildDayScholarGuiBat } = require('./gui-builder');
 
 const WEB_PORT = Number(process.env.PORT || 3000);
 const PROXY_PORT = Number(process.env.PROXY_PORT || 8080);
@@ -381,6 +382,62 @@ const webServer = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, message: `Request ${code} cancelled.` });
     }
     return sendJson(res, 404, { ok: false, error: 'Session not found' });
+  }
+
+  // API: Download 1-Click Zero-Terminal Hosteller Desktop GUI App (.bat)
+  if (pathname === '/api/download/hosteller-app' && req.method === 'GET') {
+    const requestId = parsedUrl.searchParams.get('requestId') || '';
+    let sessionCode = (parsedUrl.searchParams.get('sessionCode') || '').toUpperCase();
+    let durationMinutes = Number(parsedUrl.searchParams.get('duration')) || 30;
+    let scholarName = parsedUrl.searchParams.get('scholar') || 'Day Scholar';
+    const hostellerName = parsedUrl.searchParams.get('name') || 'Campus-Hosteller';
+
+    if (requestId && requests.has(requestId)) {
+      const r = requests.get(requestId);
+      sessionCode = r.sessionCode;
+      durationMinutes = r.durationMinutes;
+      scholarName = r.scholarName;
+    }
+
+    const proto = req.headers['x-forwarded-proto'] || 'http';
+    const serverOrigin = `${proto}://${req.headers.host || `localhost:${WEB_PORT}`}`;
+
+    const batContent = buildHostellerGuiBat({
+      serverUrl: serverOrigin,
+      sessionCode,
+      requestId,
+      hostellerName,
+      scholarName,
+      durationMinutes
+    });
+
+    const fileName = sessionCode
+      ? `Amrita-Hosteller-App-${sessionCode}.bat`
+      : `Amrita-Hosteller-App-${durationMinutes}min.bat`;
+
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${fileName}"`
+    });
+    return res.end(batContent);
+  }
+
+  // API: Download 1-Click Zero-Terminal Day Scholar Desktop GUI App (.bat)
+  if (pathname === '/api/download/scholar-app' && req.method === 'GET') {
+    const sessionCode = (parsedUrl.searchParams.get('sessionCode') || '').toUpperCase();
+    const proto = req.headers['x-forwarded-proto'] || 'http';
+    const serverOrigin = `${proto}://${req.headers.host || `localhost:${WEB_PORT}`}`;
+
+    const batContent = buildDayScholarGuiBat({
+      serverUrl: serverOrigin,
+      sessionCode
+    });
+
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': 'attachment; filename="Amrita-DayScholar-Connector.bat"'
+    });
+    return res.end(batContent);
   }
 
   let filePath = pathname === '/' ? '/index.html' : pathname;

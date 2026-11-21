@@ -82,6 +82,11 @@ function renderState(state) {
   if (document.activeElement !== portInput) portInput.value = state.proxyPort || 8080;
 
   document.getElementById('openDashboardLink').href = state.brokerUrl || 'https://amrita-campus-vpn.onrender.com';
+  const dlLink = document.getElementById('downloadDesktopAppLink');
+  if (dlLink) {
+    const base = (state.brokerUrl || 'https://amrita-campus-vpn.onrender.com').replace(/\/$/, '');
+    dlLink.href = `${base}/api/download/scholar-app`;
+  }
 
   renderDomains(state.allowedDomains || []);
 }
