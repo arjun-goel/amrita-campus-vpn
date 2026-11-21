@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Amrita Campus Bridge — Day Scholar & Hosteller Peer VPN</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-badge">🎓</div>
+      <div>
+        <h1>Amrita Campus Bridge</h1>
+        <p class="subtitle">Zero-Password-Sharing Peer Relay between Hostellers &amp; Day Scholars</p>
+      </div>
+    </div>
+    <div class="status-pill" id="globalStatusPill">
+      <span class="dot" id="globalStatusDot"></span>
+      <span id="globalStatusText">Checking Relay Status...</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Security Banner -->
+    <section class="security-banner">
+      <div class="sec-item">
+        <span class="sec-icon">🔒</span>
+        <div>
+          <strong>100% Private Credentials</strong>
+          <p>Uses End-to-End HTTPS <code>CONNECT</code> tunneling. The hosteller's laptop forwards encrypted TLS packets and <b>can never see</b> your login ID, password, or grades.</p>
+        </div>
+      </div>
+      <div class="sec-item">
+        <span class="sec-icon">🎯</span>
+        <div>
+          <strong>Split-Tunnel Whitelist Only</strong>
+          <p>Only <code>*.amrita.edu</code> traffic goes through the campus relay. YouTube, Google, and personal browsing stay on your own internet.</p>
+        </div>
+      </div>
+      <div class="sec-item">
+        <span class="sec-icon">⏱️</span>
+        <div>
+          <strong>Time-Boxed &amp; Revocable</strong>
+          <p>Hostellers approve access for a strict duration (15 / 30 / 60 mins) and can terminate the relay session at any instant.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Role Switcher Tabs -->
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="scholar">🎒 Day Scholar Portal (Request Campus Wi-Fi)</button>
+      <button class="tab-btn" data-tab="hosteller">🏠 Hosteller Portal (Share Campus Wi-Fi)</button>
+      <button class="tab-btn" data-tab="guide">🔀 Network Switching &amp; Setup Guide</button>
+    </div>
+
+    <!-- TAB 1: DAY SCHOLAR PORTAL -->
+    <section class="tab-panel active" id="tab-scholar">
+      <div class="grid-2">
+        <div class="card">
+          <h2>1. Request a Hosteller Relay Slot</h2>
+          <p class="muted">Need to open AUMS or an internal college website from home? Post a time-limited request below (or directly from the Chrome Extension).</p>
+          <form id="requestForm" class="form-stack">
+            <div class="field">
+              <label for="scholarName">Your Name / Identifier</label>
+              <input type="text" id="scholarName" placeholder="e.g., Rahul (CSE 3rd Year)" required />
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="purpose">Purpose</label>
+                <select id="purpose">
+                  <option value="AUMS Login & Attendance Check">AUMS Login &amp; Attendance Check</option>
+                  <option value="Course Registration / Exam Results">Course Registration / Exam Results</option>
+                  <option value="Amrita CMS / Library Portal">Amrita CMS / Library Portal</option>
+                  <option value="Lab / Intranet Portal Access">Lab / Intranet Portal Access</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="durationMinutes">Duration Needed</label>
+                <select id="durationMinutes">
+                  <option value="15">15 Minutes</option>
+                  <option value="30" selected>30 Minutes</option>
+                  <option value="60">60 Minutes (1 Hour)</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="customDomains">Allowed College Domains (Comma-separated)</label>
+              <input type="text" id="customDomains" value="*.amrita.edu, amrita.edu" />
+            </div>
+            <button type="submit" class="btn btn-primary">🚀 Submit Campus Access Request</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>2. Your Session &amp; Browser Extension Status</h2>
+          <div id="scholarActiveBox" class="status-box">
+            <p class="muted">No active session selected yet. Submit a request or pick an active Hosteller session code below.</p>
+          </div>
+          <div class="divider"></div>
+          <h3>Active &amp; Recent Requests</h3>
+          <div id="scholarRequestsList" class="request-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: HOSTELLER PORTAL -->
+    <section class="tab-panel" id="tab-hosteller">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Pending Requests from Day Scholars</h2>
+          <p class="muted">Connect your laptop to <b>Amrita College Wi-Fi</b>, then click <b>"Approve &amp; Host"</b> on any request below to generate the 1-line command.</p>
+          <div id="hostellerPendingList" class="request-list"></div>
+
+          <div class="divider"></div>
+          <h3>Or Start an Instant Open Relay Session</h3>
+          <p class="muted">Want to generate a Session Code for a friend right away without waiting for a request?</p>
+          <div class="command-box">
+            <code id="instantHostCmd">node hosteller-agent/agent.js --name "Hosteller" --duration 30</code>
+            <button class="btn btn-sm" id="copyInstantCmdBtn">Copy Command</button>
+          </div>
+          <p class="hint">Or simply double-click <code>Start-Hosteller-Relay.bat</code> in the project folder!</p>
+        </div>
+
+        <div class="card">
+          <h2>Live Campus Relay Monitor (Hosteller View)</h2>
+          <p class="muted">You can see which college domains are being accessed and revoke access anytime. Passwords and page contents are E2E TLS encrypted.</p>
+          <div id="activeHostSessions"></div>
+          <div class="divider"></div>
+          <h3>🔒 Live Encrypted Tunnel Log</h3>
+          <div id="tunnelAuditLog" class="log-console">
+            <div class="log-empty">Waiting for a Hosteller agent to connect...</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: NETWORK SWITCHING & SETUP GUIDE -->
+    <section class="tab-panel" id="tab-guide">
+      <div class="card">
+        <h2>🔀 How to Switch Between Home Network &amp; College Wi-Fi (Testing &amp; Daily Use)</h2>
+        <div class="steps-grid">
+          <div class="step-card">
+            <span class="step-num">Step 1</span>
+            <h3>Load the Browser Extension</h3>
+            <ol>
+              <li>Open Chrome, Edge, or Brave and go to <code>chrome://extensions</code>.</li>
+              <li>Turn ON <b>Developer mode</b> (top-right toggle).</li>
+              <li>Click <b>Load unpacked</b> and select the <code>extension</code> folder inside <code>Amrita_VPN</code>.</li>
+            </ol>
+          </div>
+          <div class="step-card">
+            <span class="step-num">Step 2</span>
+            <h3>When on College Wi-Fi (Hosteller Mode)</h3>
+            <ol>
+              <li>Connect your laptop Wi-Fi to the <b>Amrita Campus Wi-Fi / LAN</b>.</li>
+              <li>Make sure the extension toggle is <b>OFF</b> on the Hosteller laptop (since the Hosteller is already directly on campus Wi-Fi).</li>
+              <li>Double-click <code>Start-Hosteller-Relay.bat</code> or run:<br/><code>npm run hosteller</code></li>
+              <li>Share the generated <b>Session Code (e.g., AMR-4F9A)</b> with the Day Scholar (or click Approve on their request).</li>
+            </ol>
+          </div>
+          <div class="step-card">
+            <span class="step-num">Step 3</span>
+            <h3>When Outside College (Day Scholar Mode)</h3>
+            <ol>
+              <li>Stay connected to your <b>Home Wi-Fi or Mobile Hotspot</b>.</li>
+              <li>Click the <b>Amrita Campus VPN</b> extension icon in your browser toolbar.</li>
+              <li>Request access (or enter the Session Code) and click <b>Connect Campus VPN</b>.</li>
+              <li>Open any <code>*.amrita.edu</code> website — it routes through the Hosteller's campus Wi-Fi while all other websites use your fast home internet!</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal for Hosteller Command when clicking "Approve & Host" -->
+  <div class="modal-backdrop hidden" id="hostModal">
+    <div class="modal">
+      <h3>🏠 Approve &amp; Start Campus Relay on Your Laptop</h3>
+      <p id="hostModalDesc"></p>
+      <div class="command-box">
+        <code id="hostModalCmd"></code>
+        <button class="btn btn-sm" id="copyModalCmdBtn">Copy</button>
+      </div>
+      <p class="hint">Run this command in PowerShell / Terminal inside <code>c:\Users\goela\Desktop\Amrita_VPN</code> while connected to <b>College Wi-Fi</b>. The tunnel will auto-close when the timer expires!</p>
+      <div class="modal-actions">
+        <button class="btn" id="closeModalBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

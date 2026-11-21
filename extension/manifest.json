@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Amrita Campus Bridge VPN (Day Scholar Relay)",
+  "version": "1.0.0",
+  "description": "Split-tunnel Campus Wi-Fi VPN for Amrita Day Scholars. Access *.amrita.edu remotely via time-boxed Hosteller peer relays without sharing passwords.",
+  "permissions": [
+    "proxy",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Amrita Campus Bridge VPN",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

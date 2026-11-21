@@ -1,0 +1,20 @@
+{
+  "name": "amrita-campus-bridge",
+  "version": "1.0.0",
+  "description": "Peer-to-Peer Campus Wi-Fi Relay Platform & Split-Tunnel Browser VPN Extension for Day Scholars and Hostellers",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "server": "node server/server.js",
+    "hosteller": "node hosteller-agent/agent.js",
+    "test": "node test-e2e.js"
+  },
+  "keywords": [
+    "amrita",
+    "campus-vpn",
+    "chrome-extension",
+    "proxy",
+    "split-tunnel"
+  ],
+  "license": "MIT"
+}
