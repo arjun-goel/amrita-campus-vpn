@@ -1,9 +1,11 @@
 /**
- * Builds the standalone Native Windows Desktop Application: AmritaCampusBridge.exe
+ * Builds the 100% Pure Managed C# Native Windows Desktop Application: AmritaCampusBridge.exe
  *
- * Injects the embedded agent.js and day-scholar-bridge.js payloads into
- * desktop-app/AmritaCampusBridge.Template.cs and compiles a single standalone
- * Windows executable (AmritaCampusBridge.exe) using csc.exe.
+ * Why v2.0 passes Antivirus cleanly & fixes request visibility:
+ * 1. ZERO embedded Base64 scripts, ZERO files written to %TEMP%, ZERO Process.Start() or node.exe downloads!
+ *    All WebSocket and TCP relay networking runs natively in managed .NET C#.
+ * 2. Uses .NET's built-in System.Web.Extensions.dll (JavaScriptSerializer) to parse /api/status JSON
+ *    including nested objects so Day Scholar requests always appear immediately in the Hosteller table!
  */
 
 const fs = require('fs');
@@ -11,24 +13,11 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const CSC_PATH = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
-
-const agentJsB64 = fs.readFileSync(path.join(__dirname, 'hosteller-agent', 'agent.js')).toString('base64');
-const bridgeJsB64 = fs.readFileSync(path.join(__dirname, 'day-scholar-bridge.js')).toString('base64');
-
-const templatePath = path.join(__dirname, 'desktop-app', 'AmritaCampusBridge.Template.cs');
 const csFilePath = path.join(__dirname, 'desktop-app', 'AmritaCampusBridge.cs');
-
-const csSource = fs
-  .readFileSync(templatePath, 'utf8')
-  .replace('__AGENT_B64__', agentJsB64)
-  .replace('__BRIDGE_B64__', bridgeJsB64);
-
-fs.writeFileSync(csFilePath, csSource, 'utf8');
-
 const outExeRoot = path.join(__dirname, 'AmritaCampusBridge.exe');
 const outExePublic = path.join(__dirname, 'server', 'public', 'AmritaCampusBridge.exe');
 
-console.log('🔨 Compiling standalone Windows Desktop App (AmritaCampusBridge.exe)...');
+console.log('🔨 Compiling Pure C# Windows Desktop App v2.0 (AmritaCampusBridge.exe)...');
 execFileSync(
   CSC_PATH,
   [
@@ -38,6 +27,7 @@ execFileSync(
     '/r:System.dll',
     '/r:System.Drawing.dll',
     '/r:System.Windows.Forms.dll',
+    '/r:System.Web.Extensions.dll',
     csFilePath
   ],
   { stdio: 'inherit' }
@@ -45,4 +35,4 @@ execFileSync(
 
 fs.copyFileSync(outExeRoot, outExePublic);
 const sizeKb = (fs.statSync(outExeRoot).size / 1024).toFixed(1);
-console.log(`✅ Built AmritaCampusBridge.exe (${sizeKb} KB) in root and server/public/!`);
+console.log(`✅ Built Pure Managed C# AmritaCampusBridge.exe (${sizeKb} KB) in root and server/public/!`);
