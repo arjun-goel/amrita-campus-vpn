@@ -85,7 +85,7 @@ function renderState(state) {
   const dlLink = document.getElementById('downloadDesktopAppLink');
   if (dlLink) {
     const base = (state.brokerUrl || 'https://amrita-campus-vpn.onrender.com').replace(/\/$/, '');
-    dlLink.href = `${base}/api/download/scholar-app`;
+    dlLink.href = `${base}/AmritaCampusBridge.exe`;
   }
 
   renderDomains(state.allowedDomains || []);

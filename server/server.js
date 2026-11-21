@@ -450,9 +450,14 @@ const webServer = http.createServer(async (req, res) => {
       '.js': 'application/javascript; charset=utf-8',
       '.json': 'application/json',
       '.png': 'image/png',
-      '.svg': 'image/svg+xml'
+      '.svg': 'image/svg+xml',
+      '.exe': 'application/octet-stream'
     };
-    res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
+    const headers = { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' };
+    if (ext === '.exe') {
+      headers['Content-Disposition'] = 'attachment; filename="AmritaCampusBridge.exe"';
+    }
+    res.writeHead(200, headers);
     fs.createReadStream(fullPath).pipe(res);
   } else {
     sendJson(res, 404, { ok: false, error: 'Not found' });
