@@ -2,28 +2,21 @@
  * Amrita Campus Bridge — Hosteller Campus Relay Agent
  *
  * Run this script on a laptop connected to AMRITA COLLEGE WI-FI.
- * Zero external dependencies — uses pure Node.js built-in modules.
- *
- * Usage:
- *   node hosteller-agent/agent.js
- *   node hosteller-agent/agent.js --server http://localhost:3000 --name "Hostel-Block-3" --duration 30 --session AMR-1234
- *
- * Security & Privacy Enforced on Hosteller's Laptop:
- * 1. Outbound Reverse Tunnel: Connects outbound to the Broker Server so no port-forwarding is required on campus Wi-Fi.
- * 2. Hosteller-Side Domain Guard: Refuses to connect to any domain outside *.amrita.edu (or configured college whitelist).
- * 3. E2E TLS Pass-Through: Forwards raw encrypted TLS bytes for port 443; hosteller cannot view Day Scholar passwords, and Day Scholar cannot access hosteller's local files.
- * 4. Automatic Time-Limit Shutdown: Disconnects automatically when the approved timer expires.
+ * Connects outbound over standard RFC 6455 WebSocket to https://amrita-campus-vpn.onrender.com
+ * (or localhost:3000) so it works through both College Wi-Fi firewalls and Render Cloud!
  */
 
 const http = require('http');
 const https = require('https');
 const net = require('net');
+const crypto = require('crypto');
 const { URL } = require('url');
 
-// Parse CLI arguments
+const DEFAULT_RENDER_URL = 'https://amrita-campus-vpn.onrender.com';
+
 function parseArgs(argv) {
   const opts = {
-    server: process.env.AMRITA_BROKER_URL || 'http://127.0.0.1:3000',
+    server: process.env.AMRITA_BROKER_URL || DEFAULT_RENDER_URL,
     name: process.env.HOSTELLER_NAME || 'Campus-Hosteller',
     duration: Number(process.env.DURATION_MINS || 30),
     session: '',
@@ -65,6 +58,28 @@ function isDomainAllowed(hostname, allowedPatterns = DEFAULT_ALLOWED_DOMAINS) {
   return false;
 }
 
+// RFC 6455 Client-to-Server Masked Binary WebSocket Frame (using 0x00000000 mask key)
+function encodeClientWsFrame(buffer) {
+  const len = buffer.length;
+  let header;
+  if (len < 126) {
+    header = Buffer.alloc(6);
+    header[0] = 0x82; // FIN + Binary
+    header[1] = 0x80 | len; // Masked
+  } else if (len < 65536) {
+    header = Buffer.alloc(8);
+    header[0] = 0x82;
+    header[1] = 0x80 | 126;
+    header.writeUInt16BE(len, 2);
+  } else {
+    header = Buffer.alloc(14);
+    header[0] = 0x82;
+    header[1] = 0x80 | 127;
+    header.writeBigUInt64BE(BigInt(len), 2);
+  }
+  return Buffer.concat([header, buffer]);
+}
+
 function sendTunnelFrame(socket, headerObj, payloadBuf = null) {
   if (!socket || socket.destroyed) return false;
   const dataBuf = payloadBuf ? Buffer.from(payloadBuf) : Buffer.alloc(0);
@@ -72,8 +87,9 @@ function sendTunnelFrame(socket, headerObj, payloadBuf = null) {
   const headerBuf = Buffer.from(JSON.stringify(headerObj), 'utf8');
   const lenPrefix = Buffer.alloc(4);
   lenPrefix.writeUInt32BE(headerBuf.length, 0);
+  const inner = Buffer.concat([lenPrefix, headerBuf, dataBuf]);
   try {
-    socket.write(Buffer.concat([lenPrefix, headerBuf, dataBuf]));
+    socket.write(encodeClientWsFrame(inner));
     return true;
   } catch (_) {
     return false;
@@ -81,28 +97,77 @@ function sendTunnelFrame(socket, headerObj, payloadBuf = null) {
 }
 
 function attachFrameParser(socket, onFrame) {
-  let buf = Buffer.alloc(0);
-  socket.on('data', (chunk) => {
-    buf = Buffer.concat([buf, chunk]);
-    while (buf.length >= 4) {
-      const headerLen = buf.readUInt32BE(0);
+  let wsBuf = Buffer.alloc(0);
+  let innerBuf = Buffer.alloc(0);
+
+  function processInnerFrames() {
+    while (innerBuf.length >= 4) {
+      const headerLen = innerBuf.readUInt32BE(0);
       if (headerLen > 1024 * 1024) {
         socket.destroy();
         return;
       }
-      if (buf.length < 4 + headerLen) break;
+      if (innerBuf.length < 4 + headerLen) break;
       let header;
       try {
-        header = JSON.parse(buf.subarray(4, 4 + headerLen).toString('utf8'));
+        header = JSON.parse(innerBuf.subarray(4, 4 + headerLen).toString('utf8'));
       } catch (_) {
         socket.destroy();
         return;
       }
       const payloadLen = header.len || 0;
-      if (buf.length < 4 + headerLen + payloadLen) break;
-      const payload = payloadLen > 0 ? buf.subarray(4 + headerLen, 4 + headerLen + payloadLen) : Buffer.alloc(0);
-      buf = buf.subarray(4 + headerLen + payloadLen);
+      if (innerBuf.length < 4 + headerLen + payloadLen) break;
+      const payload =
+        payloadLen > 0
+          ? innerBuf.subarray(4 + headerLen, 4 + headerLen + payloadLen)
+          : Buffer.alloc(0);
+      innerBuf = innerBuf.subarray(4 + headerLen + payloadLen);
       onFrame(header, payload);
+    }
+  }
+
+  socket.on('data', (chunk) => {
+    wsBuf = Buffer.concat([wsBuf, chunk]);
+    while (wsBuf.length >= 2) {
+      const firstByte = wsBuf[0];
+      const secondByte = wsBuf[1];
+      const opcode = firstByte & 0x0f;
+      const isMasked = Boolean(secondByte & 0x80);
+      let payloadLen = secondByte & 0x7f;
+      let offset = 2;
+
+      if (payloadLen === 126) {
+        if (wsBuf.length < 4) return;
+        payloadLen = wsBuf.readUInt16BE(2);
+        offset = 4;
+      } else if (payloadLen === 127) {
+        if (wsBuf.length < 10) return;
+        payloadLen = Number(wsBuf.readBigUInt64BE(2));
+        offset = 10;
+      }
+
+      const maskLen = isMasked ? 4 : 0;
+      if (wsBuf.length < offset + maskLen + payloadLen) return;
+
+      let frameData = wsBuf.subarray(offset + maskLen, offset + maskLen + payloadLen);
+      if (isMasked) {
+        const maskKey = wsBuf.subarray(offset, offset + 4);
+        const unmasked = Buffer.allocUnsafe(frameData.length);
+        for (let i = 0; i < frameData.length; i++) {
+          unmasked[i] = frameData[i] ^ maskKey[i & 3];
+        }
+        frameData = unmasked;
+      }
+
+      wsBuf = wsBuf.subarray(offset + maskLen + payloadLen);
+
+      if (opcode === 0x08) {
+        socket.destroy();
+        return;
+      } else if (opcode === 0x01 || opcode === 0x02 || opcode === 0x00) {
+        innerBuf = Buffer.concat([innerBuf, frameData]);
+        processInnerFrames();
+      }
     }
   });
 }
@@ -122,10 +187,12 @@ function startHostellerAgent(options = {}) {
   console.log('====================================================================');
   console.log(' 🏠 AMRITA CAMPUS BRIDGE — HOSTELLER RELAY AGENT');
   console.log('====================================================================');
-  console.log(` 📡 Connecting to Broker Server : ${cliOpts.server}`);
+  console.log(` 📡 Connecting to Cloud Broker  : ${cliOpts.server}`);
   console.log(` 👤 Hosteller Identifier        : ${cliOpts.name}`);
   console.log(` ⏱️  Approved Duration          : ${cliOpts.duration} minutes`);
   console.log('====================================================================');
+
+  const wsKey = crypto.randomBytes(16).toString('base64');
 
   const req = httpModule.request({
     hostname: serverUrl.hostname,
@@ -133,12 +200,15 @@ function startHostellerAgent(options = {}) {
     path: tunnelPath,
     method: 'GET',
     headers: {
+      Host: serverUrl.host,
       Connection: 'Upgrade',
-      Upgrade: 'amrita-tunnel'
+      Upgrade: 'websocket',
+      'Sec-WebSocket-Version': '13',
+      'Sec-WebSocket-Key': wsKey
     }
   });
 
-  const activeSockets = new Map(); // streamId -> net.Socket
+  const activeSockets = new Map();
   let allowedDomains = [...DEFAULT_ALLOWED_DOMAINS];
   let expiryTimer = null;
   let pingInterval = null;
@@ -158,6 +228,9 @@ function startHostellerAgent(options = {}) {
 
     attachFrameParser(tunnelSocket, (header, payload) => {
       if (header.type === 'WELCOME') {
+        if (header.sessionCode) {
+          console.log(` 🎫 Confirmed Session Code: [ ${header.sessionCode} ]`);
+        }
         if (Array.isArray(header.allowedDomains)) {
           allowedDomains = Array.from(new Set([...header.allowedDomains, ...DEFAULT_ALLOWED_DOMAINS]));
         }
@@ -178,7 +251,6 @@ function startHostellerAgent(options = {}) {
       } else if (header.type === 'CONNECT') {
         const { streamId, host, port, encrypted } = header;
 
-        // Hosteller-side domain verification
         if (!isDomainAllowed(host, allowedDomains)) {
           console.log(` 🚫 [BLOCKED] Rejected non-college target: ${host}:${port}`);
           sendTunnelFrame(tunnelSocket, {
@@ -237,6 +309,10 @@ function startHostellerAgent(options = {}) {
       }
     });
 
+    if (head && head.length > 0) {
+      tunnelSocket.emit('data', head);
+    }
+
     tunnelSocket.on('close', () => {
       if (pingInterval) clearInterval(pingInterval);
       for (const [, s] of activeSockets) s.destroy();
@@ -245,9 +321,12 @@ function startHostellerAgent(options = {}) {
     });
   });
 
+  req.on('response', (res) => {
+    console.error(` ❌ Server responded with HTTP ${res.statusCode} instead of WebSocket Upgrade.`);
+  });
+
   req.on('error', (err) => {
     console.error(` ❌ Failed to connect to Broker Server (${cliOpts.server}): ${err.message}`);
-    console.error('    Make sure the Broker Server is running (npm start or Start-Platform-Server.bat).');
   });
 
   req.end();

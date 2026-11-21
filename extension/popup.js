@@ -73,7 +73,7 @@ function renderState(state) {
   routingSelect.value = state.routingMode || 'split';
 
   const brokerInput = document.getElementById('brokerUrlInput');
-  if (document.activeElement !== brokerInput) brokerInput.value = state.brokerUrl || 'http://127.0.0.1:3000';
+  if (document.activeElement !== brokerInput) brokerInput.value = state.brokerUrl || 'https://amrita-campus-vpn.onrender.com';
 
   const hostInput = document.getElementById('proxyHostInput');
   if (document.activeElement !== hostInput) hostInput.value = state.proxyHost || '127.0.0.1';
@@ -81,7 +81,7 @@ function renderState(state) {
   const portInput = document.getElementById('proxyPortInput');
   if (document.activeElement !== portInput) portInput.value = state.proxyPort || 8080;
 
-  document.getElementById('openDashboardLink').href = state.brokerUrl || 'http://127.0.0.1:3000';
+  document.getElementById('openDashboardLink').href = state.brokerUrl || 'https://amrita-campus-vpn.onrender.com';
 
   renderDomains(state.allowedDomains || []);
 }

@@ -1,22 +1,13 @@
 /**
  * Amrita Campus Bridge - Broker Server, Web Platform & Proxy Gateway
+ * Hosted on Render: https://amrita-campus-vpn.onrender.com
  *
- * Runs two ports using 100% built-in Node.js modules (zero npm install required):
- * 1. Platform Web UI + REST API + Hosteller Tunnel Socket: http://0.0.0.0:3000
- * 2. Browser HTTP/HTTPS Forward Proxy (for Chrome Extension): http://0.0.0.0:8080
- *
- * Security Guarantees:
- * - End-to-End HTTPS (HTTP CONNECT): Day Scholar's browser performs TLS handshake
- *   directly with *.amrita.edu. Neither this server nor the Hosteller can read
- *   passwords, cookies, or request bodies.
- * - Strict Domain Whitelist: Only *.amrita.edu and explicitly allowed campus domains
- *   can pass through the proxy.
- * - Time-Boxed Sessions: Automatically expires and disconnects when the Hosteller's
- *   approved timer runs out.
+ * Uses 100% standard RFC 6455 WebSocket connections (/tunnel for Hostellers,
+ * /scholar for Day Scholar Local Proxy Bridge) so it works seamlessly through
+ * Render / Cloudflare load balancers as well as locally!
  */
 
 const http = require('http');
-const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -24,19 +15,17 @@ const { URL } = require('url');
 
 const WEB_PORT = Number(process.env.PORT || 3000);
 const PROXY_PORT = Number(process.env.PROXY_PORT || 8080);
+const IS_RENDER = Boolean(process.env.RENDER);
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-// Default allowed college domain patterns
 const DEFAULT_ALLOWED_DOMAINS = [
   '*.amrita.edu',
   'amrita.edu',
   '*.amritavidyalayam.org'
 ];
 
-// In-memory store for Access Requests and Active Hosteller Sessions
-// Request: { id, scholarName, rollHint, purpose, durationMinutes, status, createdAt, approvedAt, expiresAt, hostellerName, sessionCode, allowedDomains, stats }
 const requests = new Map();
-// Active Hosteller Tunnel Connections: sessionCode -> { socket, buffer, streams: Map<streamId, clientSocket>, hostellerName, requestId, connectedAt, expiresAt, allowedDomains, stats, logs }
-const activeTunnels = new Map();
+const activeTunnels = new Map(); // sessionCode -> tunnel object
 
 function generateCode() {
   return 'AMR-' + crypto.randomBytes(2).toString('hex').toUpperCase();
@@ -59,10 +48,150 @@ function isDomainAllowed(hostname, allowedPatterns = DEFAULT_ALLOWED_DOMAINS) {
   return false;
 }
 
-// Clean up expired sessions every 5 seconds
+// ============================================================================
+// RFC 6455 WebSocket Handshake & Binary Framing (Works over Render / Cloudflare)
+// ============================================================================
+function completeWebSocketHandshake(req, socket, extraHeaders = {}) {
+  const key = req.headers['sec-websocket-key'];
+  let headers =
+    'HTTP/1.1 101 Switching Protocols\r\n' +
+    'Upgrade: websocket\r\n' +
+    'Connection: Upgrade\r\n';
+  if (key) {
+    const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
+    headers += `Sec-WebSocket-Accept: ${accept}\r\n`;
+  }
+  for (const [k, v] of Object.entries(extraHeaders)) {
+    headers += `${k}: ${v}\r\n`;
+  }
+  headers += '\r\n';
+  socket.write(headers);
+  socket.setNoDelay(true);
+}
+
+function encodeWsBinaryFrame(buffer) {
+  const len = buffer.length;
+  let header;
+  if (len < 126) {
+    header = Buffer.alloc(2);
+    header[0] = 0x82; // FIN + Binary
+    header[1] = len;
+  } else if (len < 65536) {
+    header = Buffer.alloc(4);
+    header[0] = 0x82;
+    header[1] = 126;
+    header.writeUInt16BE(len, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x82;
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(len), 2);
+  }
+  return Buffer.concat([header, buffer]);
+}
+
+function sendTunnelFrame(socket, headerObj, payloadBuf = null) {
+  if (!socket || socket.destroyed) return false;
+  const dataBuf = payloadBuf ? Buffer.from(payloadBuf) : Buffer.alloc(0);
+  headerObj.len = dataBuf.length;
+  const headerBuf = Buffer.from(JSON.stringify(headerObj), 'utf8');
+  const lenPrefix = Buffer.alloc(4);
+  lenPrefix.writeUInt32BE(headerBuf.length, 0);
+  const innerFrame = Buffer.concat([lenPrefix, headerBuf, dataBuf]);
+  try {
+    socket.write(encodeWsBinaryFrame(innerFrame));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function attachFrameParser(socket, onFrame) {
+  let wsBuf = Buffer.alloc(0);
+  let innerBuf = Buffer.alloc(0);
+
+  function processInnerFrames() {
+    while (innerBuf.length >= 4) {
+      const headerLen = innerBuf.readUInt32BE(0);
+      if (headerLen > 1024 * 1024) {
+        socket.destroy();
+        return;
+      }
+      if (innerBuf.length < 4 + headerLen) break;
+      let header;
+      try {
+        header = JSON.parse(innerBuf.subarray(4, 4 + headerLen).toString('utf8'));
+      } catch (_) {
+        socket.destroy();
+        return;
+      }
+      const payloadLen = header.len || 0;
+      if (innerBuf.length < 4 + headerLen + payloadLen) break;
+      const payload =
+        payloadLen > 0
+          ? innerBuf.subarray(4 + headerLen, 4 + headerLen + payloadLen)
+          : Buffer.alloc(0);
+      innerBuf = innerBuf.subarray(4 + headerLen + payloadLen);
+      onFrame(header, payload);
+    }
+  }
+
+  socket.on('data', (chunk) => {
+    wsBuf = Buffer.concat([wsBuf, chunk]);
+    while (wsBuf.length >= 2) {
+      const firstByte = wsBuf[0];
+      const secondByte = wsBuf[1];
+      const opcode = firstByte & 0x0f;
+      const isMasked = Boolean(secondByte & 0x80);
+      let payloadLen = secondByte & 0x7f;
+      let offset = 2;
+
+      if (payloadLen === 126) {
+        if (wsBuf.length < 4) return;
+        payloadLen = wsBuf.readUInt16BE(2);
+        offset = 4;
+      } else if (payloadLen === 127) {
+        if (wsBuf.length < 10) return;
+        payloadLen = Number(wsBuf.readBigUInt64BE(2));
+        offset = 10;
+      }
+
+      const maskLen = isMasked ? 4 : 0;
+      if (wsBuf.length < offset + maskLen + payloadLen) return;
+
+      let frameData = wsBuf.subarray(offset + maskLen, offset + maskLen + payloadLen);
+      if (isMasked) {
+        const maskKey = wsBuf.subarray(offset, offset + 4);
+        const unmasked = Buffer.allocUnsafe(frameData.length);
+        for (let i = 0; i < frameData.length; i++) {
+          unmasked[i] = frameData[i] ^ maskKey[i & 3];
+        }
+        frameData = unmasked;
+      }
+
+      wsBuf = wsBuf.subarray(offset + maskLen + payloadLen);
+
+      if (opcode === 0x08) {
+        // WebSocket Close
+        socket.destroy();
+        return;
+      } else if (opcode === 0x09) {
+        // Ping -> Pong
+        socket.write(Buffer.from([0x8a, 0x00]));
+      } else if (opcode === 0x01 || opcode === 0x02 || opcode === 0x00) {
+        innerBuf = Buffer.concat([innerBuf, frameData]);
+        processInnerFrames();
+      }
+    }
+  });
+}
+
+// ============================================================================
+// Session & Tunnel Lifecycle
+// ============================================================================
 setInterval(() => {
   const now = Date.now();
-  for (const [id, req] of requests.entries()) {
+  for (const [, req] of requests.entries()) {
     if (req.status === 'active' && req.expiresAt && now >= req.expiresAt) {
       req.status = 'expired';
       if (req.sessionCode && activeTunnels.has(req.sessionCode)) {
@@ -85,7 +214,7 @@ function closeTunnel(sessionCode, reason = 'Closed') {
   } catch (_) {}
   for (const [, stream] of tunnel.streams.entries()) {
     try {
-      stream.socket.destroy();
+      if (stream.socket) stream.socket.destroy();
     } catch (_) {}
   }
   tunnel.streams.clear();
@@ -102,55 +231,6 @@ function closeTunnel(sessionCode, reason = 'Closed') {
   }
 }
 
-/**
- * Simple length-prefixed JSON + Binary framing over upgraded TCP socket
- * Frame layout:
- * [4-byte big-endian header length][JSON header bytes][optional binary payload bytes]
- * Total payload length is stored in header.len
- */
-function sendTunnelFrame(socket, headerObj, payloadBuf = null) {
-  if (!socket || socket.destroyed) return false;
-  const dataBuf = payloadBuf ? Buffer.from(payloadBuf) : Buffer.alloc(0);
-  headerObj.len = dataBuf.length;
-  const headerBuf = Buffer.from(JSON.stringify(headerObj), 'utf8');
-  const lenPrefix = Buffer.alloc(4);
-  lenPrefix.writeUInt32BE(headerBuf.length, 0);
-  try {
-    socket.write(Buffer.concat([lenPrefix, headerBuf, dataBuf]));
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-function attachFrameParser(socket, onFrame) {
-  let buf = Buffer.alloc(0);
-  socket.on('data', (chunk) => {
-    buf = Buffer.concat([buf, chunk]);
-    while (buf.length >= 4) {
-      const headerLen = buf.readUInt32BE(0);
-      if (headerLen > 1024 * 1024) {
-        socket.destroy();
-        return;
-      }
-      if (buf.length < 4 + headerLen) break;
-      let header;
-      try {
-        header = JSON.parse(buf.subarray(4, 4 + headerLen).toString('utf8'));
-      } catch (_) {
-        socket.destroy();
-        return;
-      }
-      const payloadLen = header.len || 0;
-      if (buf.length < 4 + headerLen + payloadLen) break;
-      const payload = payloadLen > 0 ? buf.subarray(4 + headerLen, 4 + headerLen + payloadLen) : Buffer.alloc(0);
-      buf = buf.subarray(4 + headerLen + payloadLen);
-      onFrame(header, payload);
-    }
-  });
-}
-
-// Get the best active tunnel (by sessionCode if specified, else most recent active tunnel)
 function getActiveTunnel(preferredCode = null) {
   const now = Date.now();
   if (preferredCode && activeTunnels.has(preferredCode)) {
@@ -174,9 +254,6 @@ function recordTunnelLog(tunnel, entry) {
   if (tunnel.logs.length > 60) tunnel.logs.pop();
 }
 
-// ============================================================================
-// 1. WEB PLATFORM & API SERVER (PORT 3000)
-// ============================================================================
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -206,6 +283,11 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+// ============================================================================
+// 1. WEB PLATFORM & API SERVER (PORT 3000 / Render PORT)
+// ============================================================================
+let nextStreamId = 1;
+
 const webServer = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     return sendJson(res, 200, { ok: true });
@@ -214,7 +296,6 @@ const webServer = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = parsedUrl.pathname;
 
-  // API: Overall status (used by Web Dashboard & Browser Extension)
   if (pathname === '/api/status' && req.method === 'GET') {
     const preferredCode = parsedUrl.searchParams.get('sessionCode') || null;
     const tunnel = getActiveTunnel(preferredCode);
@@ -233,7 +314,7 @@ const webServer = http.createServer(async (req, res) => {
 
     return sendJson(res, 200, {
       ok: true,
-      proxyHost: req.headers.host ? req.headers.host.split(':')[0] : '127.0.0.1',
+      proxyHost: '127.0.0.1',
       proxyPort: PROXY_PORT,
       webPort: WEB_PORT,
       hasActiveHosteller: Boolean(tunnel),
@@ -252,16 +333,16 @@ const webServer = http.createServer(async (req, res) => {
     });
   }
 
-  // API: Day Scholar creates an access request
   if (pathname === '/api/requests' && req.method === 'POST') {
     try {
       const body = await parseJsonBody(req);
       const id = 'REQ-' + crypto.randomBytes(3).toString('hex').toUpperCase();
       const sessionCode = generateCode();
       const durationMinutes = Math.min(180, Math.max(5, Number(body.durationMinutes) || 30));
-      const customDomains = Array.isArray(body.allowedDomains) && body.allowedDomains.length > 0
-        ? body.allowedDomains
-        : DEFAULT_ALLOWED_DOMAINS;
+      const customDomains =
+        Array.isArray(body.allowedDomains) && body.allowedDomains.length > 0
+          ? body.allowedDomains
+          : DEFAULT_ALLOWED_DOMAINS;
 
       const newReq = {
         id,
@@ -269,7 +350,7 @@ const webServer = http.createServer(async (req, res) => {
         rollHint: (body.rollHint || '').trim().slice(0, 30),
         purpose: (body.purpose || 'AUMS / Campus Portal Login').trim().slice(0, 100),
         durationMinutes,
-        status: 'pending', // pending -> active -> completed / expired
+        status: 'pending',
         createdAt: Date.now(),
         approvedAt: null,
         expiresAt: null,
@@ -285,14 +366,12 @@ const webServer = http.createServer(async (req, res) => {
     }
   }
 
-  // API: Hosteller terminates/revokes an active session or deletes a request
   if (pathname.startsWith('/api/sessions/') && req.method === 'DELETE') {
     const code = pathname.split('/').pop();
     if (activeTunnels.has(code)) {
       closeTunnel(code, 'Revoked by Hosteller');
       return sendJson(res, 200, { ok: true, message: `Session ${code} terminated.` });
     }
-    // Also check if it's a request ID
     if (requests.has(code)) {
       const r = requests.get(code);
       if (r.sessionCode && activeTunnels.has(r.sessionCode)) {
@@ -304,7 +383,6 @@ const webServer = http.createServer(async (req, res) => {
     return sendJson(res, 404, { ok: false, error: 'Session not found' });
   }
 
-  // Static files from server/public
   let filePath = pathname === '/' ? '/index.html' : pathname;
   const fullPath = path.join(__dirname, 'public', path.normalize(filePath).replace(/^(\.\.[\/\\])+/, ''));
   if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
@@ -324,158 +402,242 @@ const webServer = http.createServer(async (req, res) => {
   }
 });
 
-// Handle Hosteller Agent Tunnel Upgrade on Port 3000 (/tunnel)
-webServer.on('upgrade', (req, socket, head) => {
+// WebSocket Upgrade Handler:
+// 1. /tunnel  -> Hosteller Agent on College Wi-Fi
+// 2. /scholar -> Day Scholar Local Proxy Bridge (connects Day Scholar's localhost:8080 to Render Cloud!)
+webServer.on('upgrade', (req, socket) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  if (parsedUrl.pathname !== '/tunnel') {
-    socket.destroy();
+
+  // --------------------------------------------------------------------------
+  // ROUTE A: Hosteller Agent connecting from College Wi-Fi (/tunnel)
+  // --------------------------------------------------------------------------
+  if (parsedUrl.pathname === '/tunnel') {
+    const requestId = parsedUrl.searchParams.get('requestId') || null;
+    let sessionCode = (parsedUrl.searchParams.get('sessionCode') || '').toUpperCase();
+    const hostellerName = parsedUrl.searchParams.get('hostellerName') || 'Campus Hosteller';
+    let durationMinutes = Math.min(180, Math.max(1, Number(parsedUrl.searchParams.get('duration')) || 30));
+    let allowedDomains = [...DEFAULT_ALLOWED_DOMAINS];
+
+    let linkedReq = null;
+    if (requestId && requests.has(requestId)) {
+      linkedReq = requests.get(requestId);
+    } else if (sessionCode) {
+      for (const [, r] of requests.entries()) {
+        if (r.sessionCode === sessionCode) {
+          linkedReq = r;
+          break;
+        }
+      }
+    } else {
+      for (const [, r] of requests.entries()) {
+        if (r.status === 'pending') {
+          linkedReq = r;
+          break;
+        }
+      }
+    }
+
+    if (linkedReq) {
+      sessionCode = linkedReq.sessionCode;
+      durationMinutes = linkedReq.durationMinutes;
+      allowedDomains = linkedReq.allowedDomains || DEFAULT_ALLOWED_DOMAINS;
+      linkedReq.status = 'active';
+      linkedReq.approvedAt = Date.now();
+      linkedReq.expiresAt = Date.now() + durationMinutes * 60 * 1000;
+      linkedReq.hostellerName = hostellerName;
+    } else if (!sessionCode) {
+      sessionCode = generateCode();
+    }
+
+    const expiresAt = Date.now() + durationMinutes * 60 * 1000;
+    completeWebSocketHandshake(req, socket, { 'X-Session-Code': sessionCode });
+
+    if (activeTunnels.has(sessionCode)) {
+      closeTunnel(sessionCode, 'Replaced by new connection');
+    }
+
+    const tunnel = {
+      sessionCode,
+      socket,
+      streams: new Map(),
+      hostellerName,
+      requestId: linkedReq ? linkedReq.id : null,
+      connectedAt: Date.now(),
+      expiresAt,
+      allowedDomains,
+      stats: { connections: 0, bytesRelayed: 0, blockedAttempts: 0 },
+      logs: []
+    };
+    activeTunnels.set(sessionCode, tunnel);
+
+    recordTunnelLog(tunnel, {
+      event: 'HOST_CONNECTED',
+      detail: `${hostellerName} started sharing campus Wi-Fi for ${durationMinutes} mins (Code: ${sessionCode})`
+    });
+
+    sendTunnelFrame(socket, {
+      type: 'WELCOME',
+      sessionCode,
+      requestId: tunnel.requestId,
+      scholarName: linkedReq ? linkedReq.scholarName : 'Any Day Scholar with code',
+      durationMinutes,
+      expiresAt,
+      allowedDomains
+    });
+
+    attachFrameParser(socket, (header, payload) => {
+      const stream = tunnel.streams.get(header.streamId);
+      if (header.type === 'CONNECT_OK') {
+        if (stream && stream.onConnected) stream.onConnected();
+      } else if (header.type === 'CONNECT_ERR') {
+        if (stream) {
+          if (stream.onError) stream.onError(header.error || 'Connect failed');
+          tunnel.streams.delete(header.streamId);
+        }
+      } else if (header.type === 'DATA') {
+        if (stream && payload.length > 0) {
+          tunnel.stats.bytesRelayed += payload.length;
+          if (linkedReq) linkedReq.stats.bytesRelayed = tunnel.stats.bytesRelayed;
+          if (stream.onData) stream.onData(payload);
+        }
+      } else if (header.type === 'END') {
+        if (stream) {
+          if (stream.onEnd) stream.onEnd();
+          tunnel.streams.delete(header.streamId);
+        }
+      } else if (header.type === 'PING') {
+        sendTunnelFrame(socket, { type: 'PONG', ts: Date.now() });
+      }
+    });
+
+    socket.on('close', () => {
+      if (activeTunnels.get(sessionCode) === tunnel) {
+        closeTunnel(sessionCode, 'Hosteller disconnected');
+      }
+    });
+
+    socket.on('error', () => {
+      if (activeTunnels.get(sessionCode) === tunnel) {
+        closeTunnel(sessionCode, 'Hosteller connection error');
+      }
+    });
     return;
   }
 
-  const requestId = parsedUrl.searchParams.get('requestId') || null;
-  let sessionCode = (parsedUrl.searchParams.get('sessionCode') || '').toUpperCase();
-  const hostellerName = parsedUrl.searchParams.get('hostellerName') || 'Campus Hosteller';
-  let durationMinutes = Math.min(180, Math.max(1, Number(parsedUrl.searchParams.get('duration')) || 30));
-  let allowedDomains = [...DEFAULT_ALLOWED_DOMAINS];
+  // --------------------------------------------------------------------------
+  // ROUTE B: Day Scholar Local Proxy Bridge connecting over WebSocket (/scholar)
+  // Allows Day Scholar's localhost:8080 to tunnel through Render Cloud to Hosteller!
+  // --------------------------------------------------------------------------
+  if (parsedUrl.pathname === '/scholar') {
+    const preferredCode = (parsedUrl.searchParams.get('sessionCode') || '').toUpperCase();
+    completeWebSocketHandshake(req, socket);
 
-  // Link to an existing Day Scholar request if provided
-  let linkedReq = null;
-  if (requestId && requests.has(requestId)) {
-    linkedReq = requests.get(requestId);
-  } else if (sessionCode) {
-    for (const [, r] of requests.entries()) {
-      if (r.sessionCode === sessionCode) {
-        linkedReq = r;
-        break;
+    // Map scholar's local streamId -> server global streamId
+    const streamMap = new Map();
+
+    attachFrameParser(socket, (header, payload) => {
+      const tunnel = getActiveTunnel(header.sessionCode || preferredCode || null);
+      if (header.type === 'PING') {
+        sendTunnelFrame(socket, { type: 'PONG', ts: Date.now() });
+        return;
       }
-    }
-  } else {
-    // Auto-match oldest pending request if none specified
-    for (const [, r] of requests.entries()) {
-      if (r.status === 'pending') {
-        linkedReq = r;
-        break;
-      }
-    }
-  }
 
-  if (linkedReq) {
-    sessionCode = linkedReq.sessionCode;
-    durationMinutes = linkedReq.durationMinutes;
-    allowedDomains = linkedReq.allowedDomains || DEFAULT_ALLOWED_DOMAINS;
-    linkedReq.status = 'active';
-    linkedReq.approvedAt = Date.now();
-    linkedReq.expiresAt = Date.now() + durationMinutes * 60 * 1000;
-    linkedReq.hostellerName = hostellerName;
-  } else if (!sessionCode) {
-    sessionCode = generateCode();
-  }
-
-  const expiresAt = Date.now() + durationMinutes * 60 * 1000;
-
-  // Complete HTTP Upgrade handshake
-  socket.write(
-    'HTTP/1.1 101 Switching Protocols\r\n' +
-    'Upgrade: amrita-tunnel\r\n' +
-    'Connection: Upgrade\r\n' +
-    `X-Session-Code: ${sessionCode}\r\n` +
-    '\r\n'
-  );
-  socket.setNoDelay(true);
-
-  // Close any previous tunnel with same sessionCode
-  if (activeTunnels.has(sessionCode)) {
-    closeTunnel(sessionCode, 'Replaced by new connection');
-  }
-
-  const tunnel = {
-    sessionCode,
-    socket,
-    streams: new Map(),
-    hostellerName,
-    requestId: linkedReq ? linkedReq.id : null,
-    connectedAt: Date.now(),
-    expiresAt,
-    allowedDomains,
-    stats: { connections: 0, bytesRelayed: 0, blockedAttempts: 0 },
-    logs: []
-  };
-  activeTunnels.set(sessionCode, tunnel);
-
-  recordTunnelLog(tunnel, {
-    event: 'HOST_CONNECTED',
-    detail: `${hostellerName} started sharing campus Wi-Fi for ${durationMinutes} mins (Code: ${sessionCode})`
-  });
-
-  // Send welcome configuration frame to Hosteller Agent
-  sendTunnelFrame(socket, {
-    type: 'WELCOME',
-    sessionCode,
-    requestId: tunnel.requestId,
-    scholarName: linkedReq ? linkedReq.scholarName : 'Any Day Scholar with code',
-    durationMinutes,
-    expiresAt,
-    allowedDomains
-  });
-
-  attachFrameParser(socket, (header, payload) => {
-    const stream = tunnel.streams.get(header.streamId);
-    if (header.type === 'CONNECT_OK') {
-      if (stream && !stream.socket.destroyed) {
-        if (stream.onConnected) stream.onConnected();
-      }
-    } else if (header.type === 'CONNECT_ERR') {
-      if (stream) {
-        if (!stream.responded && stream.isConnect) {
-          try {
-            stream.socket.write(`HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\nCampus Relay Error: ${header.error || 'Connect failed'}\r\n`);
-          } catch (_) {}
+      if (header.type === 'CONNECT') {
+        const clientStreamId = header.streamId;
+        if (!tunnel) {
+          sendTunnelFrame(socket, {
+            type: 'CONNECT_ERR',
+            streamId: clientStreamId,
+            status: 503,
+            error: 'No active Hosteller connected right now'
+          });
+          return;
         }
-        try {
-          stream.socket.destroy();
-        } catch (_) {}
-        tunnel.streams.delete(header.streamId);
-      }
-    } else if (header.type === 'DATA') {
-      if (stream && !stream.socket.destroyed && payload.length > 0) {
-        tunnel.stats.bytesRelayed += payload.length;
-        if (linkedReq) linkedReq.stats.bytesRelayed = tunnel.stats.bytesRelayed;
-        try {
-          stream.socket.write(payload);
-        } catch (_) {}
-      }
-    } else if (header.type === 'END') {
-      if (stream) {
-        try {
-          stream.socket.end();
-        } catch (_) {}
-        tunnel.streams.delete(header.streamId);
-      }
-    } else if (header.type === 'PING') {
-      sendTunnelFrame(socket, { type: 'PONG', ts: Date.now() });
-    }
-  });
 
-  socket.on('close', () => {
-    if (activeTunnels.get(sessionCode) === tunnel) {
-      closeTunnel(sessionCode, 'Hosteller disconnected');
-    }
-  });
+        if (!isDomainAllowed(header.host, tunnel.allowedDomains)) {
+          tunnel.stats.blockedAttempts++;
+          recordTunnelLog(tunnel, {
+            event: 'BLOCKED_DOMAIN',
+            detail: `Blocked non-college domain ${header.host}:${header.port}`
+          });
+          sendTunnelFrame(socket, {
+            type: 'CONNECT_ERR',
+            streamId: clientStreamId,
+            status: 403,
+            error: `Domain ${header.host} is not in the college whitelist`
+          });
+          return;
+        }
 
-  socket.on('error', () => {
-    if (activeTunnels.get(sessionCode) === tunnel) {
-      closeTunnel(sessionCode, 'Hosteller connection error');
-    }
-  });
+        const serverStreamId = nextStreamId++;
+        streamMap.set(clientStreamId, { serverStreamId, tunnel });
+        tunnel.stats.connections++;
+        const linkedReq = tunnel.requestId ? requests.get(tunnel.requestId) : null;
+        if (linkedReq) linkedReq.stats.connections = tunnel.stats.connections;
+
+        recordTunnelLog(tunnel, {
+          event: header.encrypted ? 'TLS_TUNNEL' : 'HTTP_PROXY',
+          detail: `${header.encrypted ? '🔒 E2E Encrypted TLS Tunnel' : '🌐 HTTP Proxy'} -> ${header.host}:${header.port}`
+        });
+
+        tunnel.streams.set(serverStreamId, {
+          socket,
+          onConnected() {
+            sendTunnelFrame(socket, { type: 'CONNECT_OK', streamId: clientStreamId });
+          },
+          onError(errMsg) {
+            sendTunnelFrame(socket, { type: 'CONNECT_ERR', streamId: clientStreamId, status: 502, error: errMsg });
+          },
+          onData(chunk) {
+            sendTunnelFrame(socket, { type: 'DATA', streamId: clientStreamId }, chunk);
+          },
+          onEnd() {
+            sendTunnelFrame(socket, { type: 'END', streamId: clientStreamId });
+          }
+        });
+
+        sendTunnelFrame(tunnel.socket, {
+          type: 'CONNECT',
+          streamId: serverStreamId,
+          host: header.host,
+          port: header.port,
+          encrypted: Boolean(header.encrypted)
+        });
+      } else if (header.type === 'DATA') {
+        const entry = streamMap.get(header.streamId);
+        if (entry && entry.tunnel) {
+          entry.tunnel.stats.bytesRelayed += payload.length;
+          sendTunnelFrame(entry.tunnel.socket, { type: 'DATA', streamId: entry.serverStreamId }, payload);
+        }
+      } else if (header.type === 'END') {
+        const entry = streamMap.get(header.streamId);
+        if (entry && entry.tunnel) {
+          sendTunnelFrame(entry.tunnel.socket, { type: 'END', streamId: entry.serverStreamId });
+          entry.tunnel.streams.delete(entry.serverStreamId);
+          streamMap.delete(header.streamId);
+        }
+      }
+    });
+
+    socket.on('close', () => {
+      for (const [, entry] of streamMap.entries()) {
+        if (entry.tunnel) {
+          sendTunnelFrame(entry.tunnel.socket, { type: 'END', streamId: entry.serverStreamId });
+          entry.tunnel.streams.delete(entry.serverStreamId);
+        }
+      }
+      streamMap.clear();
+    });
+    return;
+  }
+
+  socket.destroy();
 });
 
 // ============================================================================
-// 2. BROWSER HTTP / HTTPS FORWARD PROXY SERVER (PORT 8080)
+// 2. DIRECT BROWSER HTTP / HTTPS FORWARD PROXY SERVER (PORT 8080 - Local Mode)
 // ============================================================================
-let nextStreamId = 1;
-
 const proxyServer = http.createServer((clientReq, clientRes) => {
-  // Diagnostic health check endpoint directly on the proxy port
   if (clientReq.url === '/__amrita_proxy_check__' || clientReq.headers['x-amrita-probe'] === '1') {
     const tunnel = getActiveTunnel(clientReq.headers['x-session-code'] || null);
     clientRes.writeHead(200, {
@@ -494,7 +656,6 @@ const proxyServer = http.createServer((clientReq, clientRes) => {
     );
   }
 
-  // Standard HTTP Forward Proxy Request (e.g. GET http://intranet.amrita.edu/...)
   let targetUrl;
   try {
     targetUrl = new URL(clientReq.url);
@@ -509,7 +670,7 @@ const proxyServer = http.createServer((clientReq, clientRes) => {
     return clientRes.end(`
       <html><body style="font-family:system-ui;background:#0f172a;color:#f8fafc;padding:2rem;text-align:center;">
         <h2>⚠️ No Active Campus Hosteller Connected</h2>
-        <p>Open the <b>Amrita Campus VPN Extension</b> or visit <a href="http://localhost:${WEB_PORT}" style="color:#38bdf8;">http://localhost:${WEB_PORT}</a> to request a Hosteller relay session.</p>
+        <p>Open the <b>Amrita Campus VPN Extension</b> or visit the Web Dashboard to request a Hosteller relay session.</p>
       </body></html>
     `);
   }
@@ -534,7 +695,6 @@ const proxyServer = http.createServer((clientReq, clientRes) => {
     detail: `HTTP ${clientReq.method} -> ${targetHost}:${targetPort} (Stream #${streamId})`
   });
 
-  // Reconstruct raw HTTP request to forward over the TCP stream to targetHost:targetPort
   const pathWithQuery = (targetUrl.pathname || '/') + (targetUrl.search || '');
   let rawHeaders = `${clientReq.method} ${pathWithQuery} HTTP/${clientReq.httpVersion}\r\n`;
   for (let i = 0; i < clientReq.rawHeaders.length; i += 2) {
@@ -551,10 +711,17 @@ const proxyServer = http.createServer((clientReq, clientRes) => {
     const initialPayload = Buffer.concat([Buffer.from(rawHeaders, 'utf8'), ...bodyChunks]);
     tunnel.streams.set(streamId, {
       socket: clientRes.socket,
-      isConnect: false,
-      responded: true,
       onConnected: () => {
         sendTunnelFrame(tunnel.socket, { type: 'DATA', streamId }, initialPayload);
+      },
+      onError: () => {
+        try { clientRes.socket.destroy(); } catch (_) {}
+      },
+      onData: (chunk) => {
+        try { clientRes.socket.write(chunk); } catch (_) {}
+      },
+      onEnd: () => {
+        try { clientRes.socket.end(); } catch (_) {}
       }
     });
 
@@ -568,7 +735,6 @@ const proxyServer = http.createServer((clientReq, clientRes) => {
   });
 });
 
-// HTTPS End-to-End Encrypted Tunneling via HTTP CONNECT (used by Chrome for all https://*.amrita.edu sites)
 proxyServer.on('connect', (req, clientSocket, head) => {
   const [targetHost, rawPort] = (req.url || '').split(':');
   const targetPort = Number(rawPort) || 443;
@@ -605,10 +771,7 @@ proxyServer.on('connect', (req, clientSocket, head) => {
 
   tunnel.streams.set(streamId, {
     socket: clientSocket,
-    isConnect: true,
-    responded: false,
     onConnected() {
-      this.responded = true;
       try {
         clientSocket.write('HTTP/1.1 200 Connection Established\r\nProxy-Agent: Amrita-Campus-Bridge\r\n\r\n');
         if (head && head.length > 0) {
@@ -616,6 +779,18 @@ proxyServer.on('connect', (req, clientSocket, head) => {
           sendTunnelFrame(tunnel.socket, { type: 'DATA', streamId }, head);
         }
       } catch (_) {}
+    },
+    onError(errMsg) {
+      try {
+        clientSocket.write(`HTTP/1.1 502 Bad Gateway\r\n\r\n${errMsg}\r\n`);
+        clientSocket.destroy();
+      } catch (_) {}
+    },
+    onData(chunk) {
+      try { clientSocket.write(chunk); } catch (_) {}
+    },
+    onEnd() {
+      try { clientSocket.end(); } catch (_) {}
     }
   });
 
@@ -651,6 +826,13 @@ proxyServer.on('connect', (req, clientSocket, head) => {
 function startServers(customWebPort = WEB_PORT, customProxyPort = PROXY_PORT) {
   return new Promise((resolve) => {
     webServer.listen(customWebPort, '0.0.0.0', () => {
+      if (IS_RENDER) {
+        console.log('====================================================================');
+        console.log(' 🎓 AMRITA CAMPUS BRIDGE - CLOUD SERVER LIVE ON RENDER');
+        console.log(` 🌐 Listening on PORT ${customWebPort}`);
+        console.log('====================================================================');
+        return resolve({ webServer, proxyServer: null });
+      }
       proxyServer.listen(customProxyPort, '0.0.0.0', () => {
         console.log('====================================================================');
         console.log(' 🎓 AMRITA CAMPUS BRIDGE - PEER VPN & RELAY PLATFORM RUNNING');

@@ -9,7 +9,7 @@
 const DEFAULT_STATE = {
   vpnEnabled: false,
   routingMode: 'split', // 'split' (only college domains) | 'all'
-  brokerUrl: 'http://127.0.0.1:3000',
+  brokerUrl: 'https://amrita-campus-vpn.onrender.com',
   proxyHost: '127.0.0.1',
   proxyPort: 8080,
   sessionCode: '',
